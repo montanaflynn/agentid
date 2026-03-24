@@ -125,8 +125,8 @@ m/agentid'/agent_index'
 ```
 
 where:
-- `agentid'` is the hardened index `0x80000000` XOR `0x61676964` (the ASCII encoding of `"agid"` interpreted as a 32-bit big-endian integer, value `1633771364`, plus the hardened offset, resulting in index `0xE1716B44`)
-- `agent_index'` is the hardened index `0x80000000` XOR `agent_index`, where `agent_index` is a non-negative integer uniquely identifying the agent within the keystore
+- `agentid'` is the hardened index `0x80000000` + `0x61676964` (the ASCII encoding of `"agid"` interpreted as a 32-bit big-endian integer, value `1633771364`, plus the hardened offset, resulting in index `0xE1716B44`)
+- `agent_index'` is the hardened index `0x80000000` + `agent_index`, where `agent_index` is a non-negative integer uniquely identifying the agent within the keystore
 
 All derivation steps MUST use hardened derivation (apostrophe notation). Non-hardened derivation MUST NOT be used for AgentID keypairs.
 
@@ -185,7 +185,7 @@ Example:
 [
   {
     "id": "urn:agent:sha256:a3f1c2d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
-    "public_key": "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU=",
+    "public_key": "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
     "created_at": "2026-03-24T17:00:00Z",
     "name": "primary-agent"
   }
@@ -214,7 +214,7 @@ A Bot Record MUST be a JSON object conforming to the following schema:
 {
   "id": "urn:agent:sha256:a3f1c2d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
   "version": 1,
-  "public_key": "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU=",
+  "public_key": "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
   "operator": {
     "name": "Acme Corp",
     "url": "https://acme.example"
@@ -224,7 +224,8 @@ A Bot Record MUST be a JSON object conforming to the following schema:
   "policies": [],
   "status": "active",
   "created_at": "2026-03-24T17:00:00Z",
-  "updated_at": "2026-03-24T17:00:00Z"
+  "updated_at": "2026-03-24T17:00:00Z",
+  "proof": "eyJhbGciOiJFZERTQSIsImNydiI6IkVkMjU1MTkifQ.eyJpZCI6InVybjphZ2VudDpzaGEyNTY6YTNmMWMyLi4uIn0.SIGNATURE"
 }
 ```
 
@@ -244,6 +245,7 @@ A Bot Record MUST be a JSON object conforming to the following schema:
 | `status` | string | REQUIRED | Lifecycle status. MUST be one of `"active"`, `"suspended"`, `"revoked"`. |
 | `created_at` | string | REQUIRED | ISO 8601 UTC timestamp of record creation. MUST include timezone designator `Z`. |
 | `updated_at` | string | REQUIRED | ISO 8601 UTC timestamp of last mutation. MUST be greater than or equal to `created_at`. |
+| `proof` | string | REQUIRED (on mutated records) | Compact JWS signature as produced by Section 6.2. MUST be absent from the payload before signing (per Section 6.2 step 1). |
 
 ### 5.3 Validation Rules
 
@@ -303,10 +305,11 @@ To verify a proof:
 1. Extract and base64url-decode the three components of the compact JWS.
 2. Verify the JWS header contains `"alg": "EdDSA"` and `"crv": "Ed25519"`. If not, reject.
 3. Decode the JWS payload from base64url to obtain the canonicalized Bot Record bytes.
-4. Parse the canonicalized bytes as JSON and verify the `id` field matches the expected signer's Agent ID (or a declared controller's Agent ID for controller-initiated mutations).
-5. Retrieve the signer's 32-byte Ed25519 public key from the `public_key` field of the Bot Record (or the controller's Bot Record for controller-initiated mutations).
-6. Verify the Ed25519 signature over `BASE64URL(header) + "." + BASE64URL(payload)` using the signer's public key per RFC 8032 Section 5.1.7.
-7. If verification fails, reject the mutation.
+4. Parse the canonicalized bytes as JSON. The `id` field is the subject agent's Agent ID. Determine the signing key as follows:
+   - **Self-signed mutation:** Retrieve the 32-byte Ed25519 public key from the `public_key` field of the Bot Record. The signature MUST verify using this key.
+   - **Controller-initiated mutation:** Iterate over the subject's `controllers` list. For each controller Agent ID, retrieve the controller's Bot Record and extract its `public_key`. Attempt Ed25519 signature verification using each controller's public key in turn. Accept the mutation if any one controller's key successfully verifies the signature. If no listed controller's key verifies, reject.
+5. Verify the Ed25519 signature over `BASE64URL(header) + "." + BASE64URL(payload)` using the candidate public key(s) identified in step 4, per RFC 8032 Section 5.1.7.
+6. If verification fails for all candidate keys, reject the mutation.
 
 ### 6.4 Who May Sign
 
@@ -326,7 +329,7 @@ A policy defines an m-of-n threshold rule for a specific operation on a Bot Reco
 
 ```json
 {
-  "operation": "key_rotation",
+  "operation": "status_update",
   "threshold": 2,
   "signers": [
     "urn:agent:sha256:a3f1c2d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
@@ -348,7 +351,6 @@ A policy defines an m-of-n threshold rule for a specific operation on a Bot Reco
 
 | Operation Identifier | Description |
 |---|---|
-| `key_rotation` | Replacing the agent's public key with a new one. |
 | `status_update` | Changing the agent's `status` field. |
 | `controller_update` | Adding or removing entries in the agent's `controllers` list. |
 | `capability_update` | Adding or removing entries in the agent's `capabilities` list. |
@@ -452,7 +454,6 @@ A controller MAY perform the following operations on a subject agent's Bot Recor
 - Update the `status` field (subject to applicable policies).
 - Add or remove capabilities from the `capabilities` list (subject to applicable policies and Section 9.4).
 - Add or remove controllers from the `controllers` list (subject to applicable policies).
-- Rotate the subject agent's public key (subject to applicable policies).
 
 All controller-initiated mutations MUST be signed by the controller's private key and MUST include the controller's Agent ID in the proof metadata. The controller's Agent ID MUST appear in the subject's `controllers` list at the time the mutation is applied.
 
@@ -609,13 +610,7 @@ Signed Bot Records and attestations include `updated_at` and `issued_at` timesta
 
 Attestations with `expires_at` in the past MUST be rejected. Attestations without `expires_at` are not subject to expiry but SHOULD be treated with appropriate skepticism for long-lived authorization decisions.
 
-### 12.6 Key Rotation
-
-Implementations MUST support key rotation: replacing an agent's public key with a new one while preserving the agent's identity document. Key rotation updates the `public_key` field in the Bot Record and MUST be signed by the current private key or by a controller with appropriate authority.
-
-Note that because the Agent ID is derived from the public key, key rotation changes the Agent ID. Implementations MUST maintain a key history log to allow verification of historical proofs signed with previous keys.
-
-### 12.7 Side-Channel Considerations
+### 12.6 Side-Channel Considerations
 
 Ed25519 signing implementations MUST use deterministic nonce generation per RFC 8032 to eliminate nonce-reuse vulnerabilities. Implementations SHOULD use a constant-time signature verification routine to mitigate timing side channels.
 
