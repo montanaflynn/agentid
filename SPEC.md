@@ -115,7 +115,7 @@ Where:
 - `public_key_bytes` is the 32-byte compressed Ed25519 public key
 - `sha256(...)` is the SHA-256 digest (RFC 6234)
 - `hex(...)` is lowercase hexadecimal encoding
-- The resulting string is 52 characters: the prefix `urn:agent:sha256:` (17 chars) plus 64 hex characters
+- The resulting string is 81 characters: the prefix `urn:agent:sha256:` (17 chars) plus 64 hex characters
 
 **Example:**
 ```
