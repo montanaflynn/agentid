@@ -168,7 +168,8 @@ The Bot Record is the canonical public identity document for an agent. It contai
   ],
   "status": "active",
   "created_at": "2026-03-24T17:00:00Z",
-  "updated_at": "2026-03-24T17:00:00Z"
+  "updated_at": "2026-03-24T17:00:00Z",
+  "proof": "eyJhbGciOiJFZERTQSJ9.eyJ2ZXJzaW9uIjoxfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
 }
 ```
 
@@ -186,10 +187,27 @@ The Bot Record is the canonical public identity document for an agent. It contai
 | `status` | string | REQUIRED | One of: `active`, `suspended`, `revoked`. |
 | `created_at` | string | REQUIRED | ISO 8601 UTC timestamp of record creation. |
 | `updated_at` | string | REQUIRED | ISO 8601 UTC timestamp of last modification. |
+| `proof` | string | REQUIRED (on mutated records) | Compact JWS signature as produced by Section 6.2. MUST be absent from the payload before signing (per Section 6.2). MUST be present on any record that has been mutated after initial creation. |
 
 ### 4.2 Record Mutations
 
 Any mutation to a Bot Record (status change, controller update) MUST be signed by the agent itself or by an authorized controller (Section 9). The mutation MUST include a `proof` field containing a JWS signature over the JCS-canonicalized updated record, as described in Section 6.
+
+**Verifying a mutated Bot Record:**
+
+A verifier receiving a mutated Bot Record MUST perform the following steps:
+
+1. Remove the `proof` field and compute the JCS-canonical bytes of the remaining record.
+2. Decode and parse the JWS `proof` value per Section 6.3. Reject if `alg` is not `"EdDSA"`.
+3. Attempt to verify the JWS signature using the subject agent's own `public_key`. If verification succeeds, the mutation is self-signed and accepted (proceed to step 7).
+4. If self-signed verification fails, inspect the `controllers` list in the Bot Record being verified. If the list is empty, reject the mutation.
+5. For each Agent ID in `controllers` (in order):
+   a. Resolve that controller's Bot Record.
+   b. Verify the controller's Bot Record `status` is `active`.
+   c. Attempt to verify the JWS signature using the controller's `public_key`.
+   d. If verification succeeds, the mutation is controller-signed and accepted (proceed to step 7).
+6. If no controller's key produced a valid signature, reject the mutation.
+7. Verify that `updated_at` is a valid ISO 8601 UTC timestamp and is not earlier than the previous `updated_at` for this record. Accept the mutation.
 
 ---
 
@@ -450,7 +468,7 @@ A Policy defines an m-of-n threshold requirement for sensitive operations on an 
 ```json
 {
   "agent_id": "urn:agent:sha256:3b4c2a1d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b",
-  "operation": "key_rotation",
+  "operation": "status_change",
   "threshold": 2,
   "signers": [
     "urn:agent:sha256:9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b",
@@ -466,7 +484,7 @@ A Policy defines an m-of-n threshold requirement for sensitive operations on an 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `agent_id` | string | REQUIRED | The Agent ID this policy governs. |
-| `operation` | string | REQUIRED | The operation requiring multi-party approval. Defined values: `key_rotation`, `status_change`, `controller_update`. |
+| `operation` | string | REQUIRED | The operation requiring multi-party approval. Defined values: `status_change`, `controller_update`. |
 | `threshold` | integer | REQUIRED | Minimum number of `signers` that MUST sign for the operation to be valid. MUST be ≥ 1 and ≤ `len(signers)`. |
 | `signers` | array | REQUIRED | Array of Agent IDs eligible to provide signatures. MUST have at least `threshold` elements. |
 | `version` | integer | REQUIRED | MUST be `1`. |
@@ -526,12 +544,10 @@ A controller MAY perform the following operations on behalf of the subject agent
 - Update the Bot Record's `operator` field.
 - Add or remove controllers (subject to Policy if one is set).
 - Change the agent's `status` from `active` to `suspended`, or from `suspended` to `active`.
-- Perform key rotation (replacing `public_key` with a new keypair's public key and updating `id` accordingly, producing a new Agent ID).
 
 A controller MUST NOT:
 
 - Issue Grants on behalf of the subject agent. Only the subject's own private key may sign Grants.
-- Perform key rotation without updating the Agent ID consistently.
 - Set status to `revoked` without explicit authorization from a root principal or Policy.
 
 ### 9.3 Hierarchical Trust
@@ -602,7 +618,7 @@ A Grant that was valid at issuance time becomes invalid if the issuer is later s
 
 ### 11.5 Agent ID Stability
 
-Agent IDs are derived from public keys. Key rotation produces a new Agent ID. Any Grants issued under the old Agent ID remain bound to the old Agent ID and MUST NOT be transferred to the new one. Operators MUST re-issue Grants after key rotation.
+Agent IDs are derived from the agent's public key and are permanently bound to that keypair. An Agent ID MUST NOT change for the lifetime of the agent's keypair. Because the Agent ID is tied to the public key, any change in keypair necessarily creates a new, distinct agent with a new Agent ID — the old identity cannot be preserved. Operators wishing to replace a keypair MUST create a new agent identity and re-issue all Grants to the new Agent ID. Any Grants issued to the old Agent ID are not transferable and become invalid once the old agent is revoked.
 
 ### 11.6 Replay Attacks
 
